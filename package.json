@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "node test/server.mjs",
-    "test": "node test/check-site.mjs"
+    "test": "node test/check-worker.mjs && node test/check-site.mjs"
   },
   "devDependencies": {
     "playwright": "^1.49.0"

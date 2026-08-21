@@ -1,14 +1,41 @@
 name = "aleandharry-rsvp"
 main = "src/index.js"
+
+# A pin, not a version to keep topped up: it fixes the runtime's behaviour to
+# what was tested on the day it was written, and moving it opts in to changes
+# nobody here asked for. It is not a thing that goes stale and it does not want
+# a reminder to bump it. This worker uses fetch, Request, Response and JSON and
+# nothing else, so no compatibility flag reaches it; the only reason to move
+# this date would be wanting a runtime feature that is not in it, and then the
+# checks in test/check-worker.mjs are what says whether it is safe.
 compatibility_date = "2026-08-04"
 
 # Mounted on the site's own domain rather than left on workers.dev, so the RSVP
-# form posts same-origin. Worker routes are matched ahead of Pages, so this one
-# path is the worker and everything else is the site.
+# form posts same-origin. Worker routes are matched ahead of Pages, so these
+# paths are the worker and everything else is the site.
 #
 # Declaring a route also switches the workers.dev URL off, which is deliberate:
 # one public endpoint writing to Airtable is enough. Setting workers_dev = true
 # would bring it back.
 routes = [
-  { pattern = "aleandharry.com/api/rsvp", zone_name = "aleandharry.com" }
+  { pattern = "aleandharry.com/api/rsvp", zone_name = "aleandharry.com" },
+  { pattern = "www.aleandharry.com/api/rsvp", zone_name = "aleandharry.com" }
 ]
+
+[observability]
+enabled = true
+head_sampling_rate = 1
+
+[vars]
+RSVP_ALLOWED_ORIGINS = "https://aleandharry.com,https://www.aleandharry.com"
+
+# The namespace ID must be unique within the Cloudflare account. The binding
+# throttles repeated submissions for the same email without putting the email
+# itself into the rate-limit key.
+[[ratelimits]]
+name = "RSVP_RATE_LIMITER"
+namespace_id = "2026082101"
+
+  [ratelimits.simple]
+  limit = 5
+  period = 60

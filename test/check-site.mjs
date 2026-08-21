@@ -51,6 +51,10 @@ try {
     check('asset resolves without redirecting', res.status === 200,
       `${asset} returned ${res.status}${res.headers.get('location') ? ` to ${res.headers.get('location')}` : ''}`);
   }
+  for (const asset of ['/robots.txt', '/sitemap.xml']) {
+    const res = await fetch(base + asset, { redirect: 'manual' });
+    check('site metadata resolves', res.status === 200, `${asset} returned ${res.status}`);
+  }
   console.log(`  ${referenced.size} references checked`);
 
   // ---------------------------------------------------------------
@@ -397,6 +401,7 @@ try {
 
     const partyCount = await page.locator('.field-party').count();
     check('guest-only fields exist', partyCount === 3, `found ${partyCount}`);
+    check('attendance question is grouped', await page.locator('fieldset legend').textContent() === 'Will you be attending?');
     check('guest-only fields hidden until attending is chosen',
       await page.locator('.field-party').first().isHidden());
     await page.click('label[for="attendingYes"]');
