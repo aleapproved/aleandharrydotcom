@@ -69,45 +69,46 @@
     <form id="rsvpForm" class="rsvp-form" novalidate>
       <div class="field">
         <label for="name">Name</label>
-        <input type="text" id="name" name="name" autocomplete="name" required>
+        <input type="text" id="name" name="name" autocomplete="name" maxlength="200" required>
       </div>
 
       <div class="field">
         <label for="email">Email</label>
-        <input type="email" id="email" name="email" autocomplete="email" inputmode="email" required>
+        <input type="email" id="email" name="email" autocomplete="email" inputmode="email" maxlength="200" required>
         <p class="field-hint">So we can send you the details once the venue is booked.</p>
       </div>
 
-      <div class="field">
-        <label>Will you be attending?</label>
+      <fieldset class="field">
+        <legend>Will you be attending?</legend>
         <div class="toggle-group">
           <input type="radio" id="attendingYes" name="attending" value="Yes" required>
           <label for="attendingYes">Yes</label>
           <input type="radio" id="attendingNo" name="attending" value="No">
           <label for="attendingNo">No</label>
         </div>
-      </div>
+      </fieldset>
 
       <div class="field field-party is-hidden">
         <label for="partySize">Party size (including you)</label>
-        <input type="number" id="partySize" name="partySize" min="1" max="20" step="1" value="1" inputmode="numeric">
+        <input type="number" id="partySize" name="partySize" min="1" max="20" step="1" value="1" inputmode="numeric" aria-describedby="partySizeHint">
+        <p class="field-hint" id="partySizeHint">Including you, up to 20 people.</p>
       </div>
 
       <div class="field field-party is-hidden">
         <label for="guestNames">Who&rsquo;s coming with you?</label>
-        <textarea id="guestNames" name="guestNames" rows="3"></textarea>
+        <textarea id="guestNames" name="guestNames" rows="3" maxlength="2000"></textarea>
         <p class="field-hint">One name per line. Leave blank if it&rsquo;s just you.</p>
       </div>
 
       <div class="field field-party is-hidden">
         <label for="dietary">Dietary requirements</label>
-        <textarea id="dietary" name="dietary" rows="3"></textarea>
+        <textarea id="dietary" name="dietary" rows="3" maxlength="1000"></textarea>
         <p class="field-hint">Allergies and anything the caterers should know, for everyone in your party.</p>
       </div>
 
       <div class="field">
         <label for="message">Anything you&rsquo;d like to say?</label>
-        <textarea id="message" name="message" rows="3"></textarea>
+        <textarea id="message" name="message" rows="3" maxlength="2000"></textarea>
         <p class="field-hint">A message, or a song that would get you onto the dance floor.</p>
       </div>
 

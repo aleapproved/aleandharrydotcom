@@ -569,13 +569,21 @@ p.quote {
   margin-bottom: 1.5rem;
 }
 
-.field label {
+.field > legend,
+.field > label {
   display: block;
   font-size: 0.75rem;
   letter-spacing: 0.15em;
   text-transform: uppercase;
   color: var(--ink-soft);
   margin-bottom: 0.6rem;
+}
+
+fieldset.field {
+  width: 100%;
+  min-inline-size: 0;
+  padding: 0;
+  border: 0;
 }
 
 .field input[type="text"],

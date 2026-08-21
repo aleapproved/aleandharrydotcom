@@ -6,3 +6,5 @@
 .wrangler/
 node_modules/
 _site/
+__pycache__/
+*.py[cod]

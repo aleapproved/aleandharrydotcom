@@ -22,9 +22,9 @@ Two things to know while poking around:
   before first paint, so it overrides your OS setting on every later visit. Run
   `localStorage.removeItem('theme')` in the console to get back to a fresh
   visitor's view.
-- **The RSVP form won't submit locally.** The worker only accepts requests from
-  `https://aleandharry.com`, so a POST from localhost fails CORS preflight. See
-  below for exercising it for real.
+- **The RSVP form won't submit locally by default.** The worker only accepts
+  the production origins until `RSVP_ALLOWED_ORIGINS` is set in its local
+  `.dev.vars`. See below for exercising it for real.
 
 ## Pages
 
@@ -141,8 +141,20 @@ nothing on a page with no photos.
 npm test
 ```
 
-Renders every page across five widths in both colour schemes and asserts the
-things that are easy to break by accident:
+Two scripts, run in that order. `test/check-worker.mjs` goes first because it
+needs no browser and takes a second: it runs the RSVP worker's own module with
+`fetch` stubbed, so nothing it does reaches Airtable and none of it needs a
+network. `test/check-site.mjs` then renders every page across five widths in
+both colour schemes.
+
+The worker checks are mostly about what it refuses — a party of nought, a party
+of a thousand, half a guest, an address that is not one — because that is the
+half the browser cannot be trusted with, and about what it stores when it does
+accept: the honeypot writing nothing, a "No" bringing no party size, and the
+Airtable column names, which are spelled out because renaming one here without
+renaming it there loses the answer silently.
+
+The site checks assert the things that are easy to break by accident:
 
 - referenced assets all resolve, and no page throws
 - the header is the same height on every page, and the nav sits on the same
@@ -167,11 +179,11 @@ things that are easy to break by accident:
 ## Deploying
 
 Pushing to `main` runs `.github/workflows/pages.yml`, which runs the checks
-above and then, only if they pass, stages the site and uploads it with
-`wrangler pages deploy`. A pull request gets the checks and stops there. It
-needs one repo secret, `CLOUDFLARE_API_TOKEN`, with Cloudflare Pages edit
-rights; the account ID is in the workflow, since on its own it authorises
-nothing.
+above and then, only if they pass, stages the site and deploys both the Pages
+site and the RSVP Worker. A pull request gets the checks and stops there. It
+needs one repo secret, `CLOUDFLARE_API_TOKEN`, with Cloudflare Pages edit and
+Workers Scripts edit rights; the account ID is in the workflow, since on its
+own it authorises nothing.
 
 The deploy stamps a content hash into the URL of both stylesheets and each
 script as it stages them, so the pages ask for `/styles.css?v=1a2b3c4d5e`.
@@ -188,6 +200,10 @@ integration, which would publish the moment you push and cannot be made to
 wait for a check. Gating it there would mean running the checks in the Pages
 build container, which has no root and so cannot install Chromium's system
 dependencies.
+
+The staging step removes the original artwork used to make the badges. Those
+files remain in the repository for regeneration, but are not guest-facing site
+assets.
 
 DNS for aleandharry.com is on Cloudflare. The apex and `www` resolve to the
 Pages project; the Fastmail `MX` records are untouched by any of this and must
@@ -275,9 +291,33 @@ to Airtable. It writes `Name`, `Email`, `Attending`, `Party Size`,
 whole record if a field doesn't exist, so add the column before sending a new
 one.
 
-It is routed at `aleandharry.com/api/rsvp`, so the form posts to its own origin
-and no CORS preflight happens in the browser at all. Worker routes are matched
-ahead of Pages, so that one path is the worker and every other path is the site.
+Free text is capped rather than refused, so nobody loses an essay to an error
+message: 200 characters for a name, 2000 for guest names and a message, 1000
+for a dietary note. The address is the exception and is refused if it is over
+200, because cutting an address to length can leave one that still looks like
+an address — `guest@sub.sub…example.com` trimmed at 200 ends `…sub.ex`, which
+passes the check and gets stored as somewhere nobody lives, under a guest who
+was told we had them. Better a visible error on their screen than a silent one
+in the base.
+
+It is routed at both `aleandharry.com/api/rsvp` and
+`www.aleandharry.com/api/rsvp`, so the form posts to its own origin on either
+public hostname and no CORS preflight happens in the browser. Worker routes are
+matched ahead of Pages, so those paths are the worker and every other path is
+the site.
+
+The worker accepts only the two production origins by default, requires a JSON
+content type, rejects missing or malformed JSON objects, caps the complete body
+at 32KB, and times out the Airtable request after eight seconds. A Cloudflare
+rate-limit binding allows five valid submissions per email per minute in each
+Cloudflare location. The email is hashed before it becomes the rate-limit key.
+The binding is local to the Worker configuration and does not expose the email
+in a request header.
+
+The static Pages deployment also supplies a Content Security Policy, HSTS,
+clickjacking protection, a referrer policy, and a restrictive Permissions
+Policy. The Worker returns its own JSON and CORS headers because Pages header
+rules do not apply to Worker responses.
 
 Declaring that route also switches the `workers.dev` URL off, which is what we
 want: one public endpoint writing to Airtable rather than two. The CORS handling
@@ -292,8 +332,10 @@ echo 'AIRTABLE_RUNTIME_TOKEN=…' > .dev.vars   # gitignored
 npx wrangler dev
 ```
 
-Then point `RSVP_ENDPOINT` in `rsvp.js` at `http://localhost:8787` and
-`ALLOWED_ORIGIN` in `worker/src/index.js` at `http://localhost:8000`, reverting
-both before committing. Note that this writes real rows to Airtable.
+Then point `RSVP_ENDPOINT` in `rsvp.js` at `http://localhost:8787` and add
+`RSVP_ALLOWED_ORIGINS=http://localhost:8000` to `worker/.dev.vars`. Note that
+this writes real rows to Airtable.
 
-Deploy with `npx wrangler deploy` from `worker/`.
+Deploy with `npx wrangler deploy` from `worker/`. The main branch workflow does
+this after the site checks, so a production Worker deploy does not drift behind
+the form code.

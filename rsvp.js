@@ -58,11 +58,16 @@ document.addEventListener('DOMContentLoaded', function () {
 
     var attending = attendingInput.value === 'Yes';
 
+    var partySize = attending ? Number(partyInput.value) : 0;
+    if (attending && (!Number.isInteger(partySize) || partySize < 1 || partySize > 20)) {
+      return fail('Party size must be a whole number between 1 and 20.', 'partySize');
+    }
+
     var payload = {
       name: field('name').value.trim(),
       email: email,
       attending: attendingInput.value,
-      partySize: attending ? Number(partyInput.value) : 0,
+      partySize: partySize,
       guestNames: attending ? field('guestNames').value.trim() : '',
       dietary: attending ? field('dietary').value.trim() : '',
       message: field('message').value.trim(),
@@ -72,18 +77,25 @@ document.addEventListener('DOMContentLoaded', function () {
     submitButton.disabled = true;
     showStatus('Sending…', 'pending');
 
-    fetch(RSVP_ENDPOINT, {
+    var controller = typeof AbortController === 'function' ? new AbortController() : null;
+    var timeout = window.setTimeout(function () {
+      if (controller) controller.abort();
+    }, 10000);
+    var request = {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
-    })
+    };
+    if (controller) request.signal = controller.signal;
+
+    fetch(RSVP_ENDPOINT, request)
       .then(function (response) {
         return response.json().then(function (data) {
           return { ok: response.ok, data: data };
         });
       })
       .then(function (result) {
-        if (!result.ok) {
+        if (!result.ok || !result.data || result.data.ok !== true) {
           throw new Error(result.data && result.data.error ? result.data.error : 'Something went wrong.');
         }
         form.reset();
@@ -94,9 +106,14 @@ document.addEventListener('DOMContentLoaded', function () {
         showStatus("Thank you, we've got your RSVP.", 'success');
       })
       .catch(function (err) {
-        showStatus(err.message || 'Something went wrong. Please try again.', 'error');
+        if (err.name === 'AbortError') {
+          showStatus('That took too long. Please try again.', 'error');
+        } else {
+          showStatus(err.message || 'Something went wrong. Please try again.', 'error');
+        }
       })
       .finally(function () {
+        window.clearTimeout(timeout);
         submitButton.disabled = false;
       });
   });

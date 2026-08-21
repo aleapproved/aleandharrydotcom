@@ -1,0 +1,5 @@
+User-agent: *
+Allow: /
+Disallow: /game
+
+Sitemap: https://aleandharry.com/sitemap.xml
