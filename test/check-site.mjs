@@ -373,6 +373,12 @@ try {
     const a = await osDark.newPage();
     await a.goto(`${base}/index.html`);
     const fromOS = await accent(a);
+    const osIcons = await a.evaluate(() => ({
+      light: getComputedStyle(document.querySelector('.theme-icon-light')).display,
+      dark: getComputedStyle(document.querySelector('.theme-icon-dark')).display
+    }));
+    check('dark OS shows Lunatone in the toggle',
+      osIcons.light === 'none' && osIcons.dark !== 'none', `${osIcons.light} / ${osIcons.dark}`);
     await osDark.close();
 
     const osLight = await browser.newContext({ colorScheme: 'light' });
@@ -388,6 +394,37 @@ try {
     await b.goto(`${base}/our-story.html`);
     check('theme persists across pages', await b.evaluate(() => document.documentElement.dataset.theme) === 'dark');
     await osLight.close();
+
+    // A stale or unsupported value can survive from an older version or a
+    // browser extension. It must not make dark mode require a no-op tap.
+    const staleDark = await browser.newContext({ colorScheme: 'dark' });
+    const c = await staleDark.newPage();
+    await c.goto(`${base}/index.html`);
+    await c.evaluate(() => localStorage.setItem('theme', 'system'));
+    await c.reload();
+    const staleState = await c.evaluate(() => ({
+      theme: document.documentElement.dataset.theme,
+      paper: getComputedStyle(document.body).getPropertyValue('--paper').trim(),
+      light: getComputedStyle(document.querySelector('.theme-icon-light')).display,
+      dark: getComputedStyle(document.querySelector('.theme-icon-dark')).display
+    }));
+    check('stale theme follows a dark OS preference',
+      staleState.theme === 'dark' && staleState.paper === '#1b1830', JSON.stringify(staleState));
+    check('stale theme shows Lunatone',
+      staleState.light === 'none' && staleState.dark !== 'none', `${staleState.light} / ${staleState.dark}`);
+    await c.click('#themeToggle');
+    const afterStaleToggle = await c.evaluate(() => ({
+      theme: document.documentElement.dataset.theme,
+      paper: getComputedStyle(document.body).getPropertyValue('--paper').trim(),
+      light: getComputedStyle(document.querySelector('.theme-icon-light')).display,
+      dark: getComputedStyle(document.querySelector('.theme-icon-dark')).display
+    }));
+    check('first toggle from stale dark state enters light mode',
+      afterStaleToggle.theme === 'light' && afterStaleToggle.paper === '#f7ecdd', JSON.stringify(afterStaleToggle));
+    check('first toggle from stale dark state shows Solrock',
+      afterStaleToggle.light !== 'none' && afterStaleToggle.dark === 'none',
+      `${afterStaleToggle.light} / ${afterStaleToggle.dark}`);
+    await staleDark.close();
   }
 
   // ---------------------------------------------------------------
