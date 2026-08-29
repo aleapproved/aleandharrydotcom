@@ -21,6 +21,17 @@
   :root:not([data-theme="light"]) {
     color-scheme: dark;
   }
+
+  /* Keep the control honest even if the pre-paint script could not declare a
+     theme. The page already follows the OS in that state, so the icon must
+     follow it too instead of making the first tap a no-op. */
+  :root:not([data-theme="light"]) .theme-toggle .theme-icon-light {
+    display: none;
+  }
+
+  :root:not([data-theme="light"]) .theme-toggle .theme-icon-dark {
+    display: block;
+  }
 }
 
 /* Every page is coloured by its Pokémon, in both schemes. Each palette below

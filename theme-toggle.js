@@ -6,14 +6,51 @@ function syncThemeColorMeta(theme) {
   if (meta) meta.setAttribute('content', theme === 'dark' ? root.dataset.paperDark : root.dataset.paper);
 }
 
+function isTheme(theme) {
+  return theme === 'dark' || theme === 'light';
+}
+
+function systemTheme() {
+  try {
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light';
+  } catch (e) {
+    return 'light';
+  }
+}
+
+function storedTheme() {
+  try {
+    var saved = localStorage.getItem('theme');
+    return isTheme(saved) ? saved : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function resolvedTheme() {
+  var declared = document.documentElement.getAttribute('data-theme');
+  return isTheme(declared) ? declared : (storedTheme() || systemTheme());
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  syncThemeColorMeta(theme);
+}
+
 document.addEventListener('DOMContentLoaded', function () {
+  var theme = resolvedTheme();
+  applyTheme(theme);
+
   var btn = document.getElementById('themeToggle');
   if (!btn) return;
   btn.addEventListener('click', function () {
-    var current = document.documentElement.getAttribute('data-theme');
+    var current = resolvedTheme();
     var next = current === 'dark' ? 'light' : 'dark';
-    document.documentElement.setAttribute('data-theme', next);
-    localStorage.setItem('theme', next);
-    syncThemeColorMeta(next);
+    applyTheme(next);
+    try {
+      localStorage.setItem('theme', next);
+    } catch (e) {}
   });
 });
