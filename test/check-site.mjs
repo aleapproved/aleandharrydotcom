@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { chromium } from 'playwright';
 import { startServer } from './server.mjs';
 
@@ -19,6 +20,44 @@ function check(name, condition, detail = '') {
 
 function section(name) {
   console.log(`\n${name}`);
+}
+
+function parseColor(value) {
+  const text = value.trim();
+  const hex = text.match(/^#([\da-f]{3}|[\da-f]{6})$/i);
+  if (hex) {
+    const digits = hex[1].length === 3 ? hex[1].split('').map((digit) => digit + digit).join('') : hex[1];
+    return [0, 2, 4].map((offset) => Number.parseInt(digits.slice(offset, offset + 2), 16));
+  }
+  const rgb = text.match(/^rgba?\(\s*([\d.]+)\s*,\s*([\d.]+)\s*,\s*([\d.]+)/i);
+  return rgb ? rgb.slice(1, 4).map(Number) : null;
+}
+
+function relativeLuminance(value) {
+  const rgb = parseColor(value);
+  if (!rgb) return null;
+  const channels = rgb.map((channel) => channel / 255).map((channel) =>
+    channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4
+  );
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+function contrastRatio(foreground, background) {
+  const foregroundLuminance = relativeLuminance(foreground);
+  const backgroundLuminance = relativeLuminance(background);
+  if (foregroundLuminance === null || backgroundLuminance === null) return null;
+  return (Math.max(foregroundLuminance, backgroundLuminance) + 0.05)
+    / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
+}
+
+function inlineExecutableScripts(html) {
+  return [...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)]
+    .filter(([, attributes]) => {
+      if (/\bsrc\s*=/i.test(attributes)) return false;
+      const type = attributes.match(/\btype\s*=\s*["']([^"']+)["']/i)?.[1].toLowerCase();
+      return !type || ['text/javascript', 'application/javascript', 'application/ecmascript', 'module'].includes(type);
+    })
+    .map(([, , body]) => body);
 }
 
 const { server, port } = await startServer();
@@ -58,6 +97,42 @@ try {
   console.log(`  ${referenced.size} references checked`);
 
   // ---------------------------------------------------------------
+  // Security headers and inline script authorization. The pre-paint bootstrap
+  // is intentionally inline, so its exact bytes must stay paired with the
+  // production CSP hash.
+  // ---------------------------------------------------------------
+  section('Security headers and CSP');
+  const productionHeaders = await readFile(new URL('../_headers', import.meta.url), 'utf8');
+  const requiredHeaders = [
+    ['Content-Security-Policy', /^[ \t]*Content-Security-Policy:/m],
+    ['Strict-Transport-Security', /^[ \t]*Strict-Transport-Security:/m],
+    ['X-Content-Type-Options', /^[ \t]*X-Content-Type-Options:\s*nosniff/m],
+    ['Referrer-Policy', /^[ \t]*Referrer-Policy:\s*strict-origin-when-cross-origin/m],
+    ['Permissions-Policy', /^[ \t]*Permissions-Policy:/m],
+  ];
+  for (const [name, pattern] of requiredHeaders) {
+    check(`production headers include ${name}`, pattern.test(productionHeaders));
+  }
+  check('production headers include frame protection',
+    /frame-ancestors\s+'none'/i.test(productionHeaders)
+    || /^[ \t]*X-Frame-Options:\s*DENY/m.test(productionHeaders));
+
+  const csp = productionHeaders.match(/^[ \t]*Content-Security-Policy:\s*(.+)$/m)?.[1] || '';
+  let inlineCount = 0;
+  for (const name of PAGES) {
+    const html = await readFile(new URL(`../${name}.html`, import.meta.url), 'utf8');
+    const scripts = inlineExecutableScripts(html);
+    check('deployed HTML has its pre-paint script', scripts.length > 0, name);
+    for (const body of scripts) {
+      inlineCount++;
+      const digest = createHash('sha256').update(body).digest('base64');
+      const source = `'sha256-${digest}'`;
+      check('CSP authorizes every inline executable script', csp.includes(source), `${name}: ${source}`);
+    }
+  }
+  check('CSP regression scan inspected inline executable scripts', inlineCount > 0, `${inlineCount} script(s)`);
+
+  // ---------------------------------------------------------------
   // Layout invariants, across every page, width and colour scheme.
   // ---------------------------------------------------------------
   section('Layout invariants');
@@ -80,7 +155,8 @@ try {
 
         const m = await page.evaluate(() => {
           const el = (s) => document.querySelector(s);
-          const toggle = el('.theme-toggle').getBoundingClientRect();
+          const toggleEl = el('.theme-toggle');
+          const toggle = toggleEl.getBoundingClientRect();
           // Only the homepage and the 404 still carry a rule; interior pages
           // open on their title alone.
           const rule = el('.rule')?.getBoundingClientRect();
@@ -93,6 +169,7 @@ try {
             hasMark: !!el('.page-mark'),
             ruleCentre: rule ? +(rule.left + rule.width / 2).toFixed(2) : null,
             paper: getComputedStyle(document.body).getPropertyValue('--paper').trim(),
+            theme: root.dataset.theme,
             themeColor: el('meta[name="theme-color"]').content,
             declaredPaper: root.dataset[root.dataset.theme === 'dark' ? 'paperDark' : 'paper'],
             email: el('.site-footer a[href^="mailto:"]')?.getAttribute('href'),
@@ -102,6 +179,8 @@ try {
             gutter: getComputedStyle(root).scrollbarGutter,
             toggleW: +toggle.width.toFixed(2),
             toggleH: +toggle.height.toFixed(2),
+            toggleLabel: toggleEl.getAttribute('aria-label'),
+            togglePressed: toggleEl.getAttribute('aria-pressed'),
             scrollsSideways: root.scrollWidth > root.clientWidth,
             position: getComputedStyle(el('.site-header')).position,
           };
@@ -132,6 +211,10 @@ try {
         check('no page errors', errors.length === 0, `${at}/${name}: ${errors[0]}`);
         // A shrunk toggle stops being a circle — the mobile-overflow tell.
         check('toggle is circular', m.toggleW === m.toggleH, `${at}/${name}: ${m.toggleW}x${m.toggleH}`);
+        check('theme toggle has the stable accessible name', m.toggleLabel === 'Dark mode', `${at}/${name}: ${m.toggleLabel}`);
+        check('theme toggle exposes its current state',
+          m.togglePressed === (m.theme === 'dark' ? 'true' : 'false'),
+          `${at}/${name}: ${m.togglePressed}`);
         check('does not scroll sideways', !m.scrollsSideways, `${at}/${name}`);
         check('header is sticky', m.position === 'sticky', `${at}/${name}: ${m.position}`);
       }
@@ -163,6 +246,69 @@ try {
     }
   }
   console.log(`  ${PAGES.length * WIDTHS.length * 2} page renders checked`);
+
+  // ---------------------------------------------------------------
+  // The light accent is used both as text and as a control background. Keep
+  // the two known problem palettes above WCAG AA without changing their paper.
+  // ---------------------------------------------------------------
+  section('Light palette contrast');
+  {
+    const lightContext = await browser.newContext({ colorScheme: 'light' });
+    const lightPage = await lightContext.newPage();
+    for (const [name, label] of [['index', 'Solrock'], ['rsvp', 'Bellibolt']]) {
+      await lightPage.goto(`${base}/${name}.html`);
+      const colors = await lightPage.evaluate(() => {
+        const body = getComputedStyle(document.body);
+        const button = document.querySelector('.rsvp-submit');
+        const privacy = document.querySelector('.rsvp-privacy');
+        return {
+          accent: body.getPropertyValue('--accent').trim(),
+          paper: body.getPropertyValue('--paper').trim(),
+          button: button ? {
+            color: getComputedStyle(button).color,
+            background: getComputedStyle(button).backgroundColor,
+          } : null,
+          privacy: privacy ? {
+            text: privacy.textContent.trim(),
+            color: getComputedStyle(privacy).color,
+          } : null,
+        };
+      });
+      const ratio = contrastRatio(colors.accent, colors.paper);
+      check(`${label} light accent reaches WCAG AA`, ratio !== null && ratio >= 4.5,
+        `${colors.accent} on ${colors.paper}: ${ratio?.toFixed(3)}`);
+      if (colors.button) {
+        const buttonRatio = contrastRatio(colors.button.color, colors.button.background);
+        check('RSVP button text reaches WCAG AA against its background',
+          buttonRatio !== null && buttonRatio >= 4.5,
+          `${colors.button.color} on ${colors.button.background}: ${buttonRatio?.toFixed(3)}`);
+      }
+      if (colors.privacy) {
+        check('RSVP privacy notice has the requested copy',
+          colors.privacy.text === 'We’ll use your RSVP details only to plan the wedding and contact you about it. They’re stored in Airtable and we’ll delete them after the wedding.');
+        check('RSVP privacy notice is readable in light mode',
+          contrastRatio(colors.privacy.color, colors.paper) >= 4.5,
+          `${colors.privacy.color} on ${colors.paper}`);
+      }
+    }
+    await lightContext.close();
+
+    const darkContext = await browser.newContext({ colorScheme: 'dark' });
+    const darkPage = await darkContext.newPage();
+    await darkPage.goto(`${base}/rsvp.html`);
+    const darkPrivacy = await darkPage.evaluate(() => {
+      const privacy = document.querySelector('.rsvp-privacy');
+      const body = getComputedStyle(document.body);
+      return {
+        color: getComputedStyle(privacy).color,
+        paper: body.getPropertyValue('--paper').trim(),
+      };
+    });
+    check('RSVP privacy notice is readable in dark mode',
+      contrastRatio(darkPrivacy.color, darkPrivacy.paper) >= 4.5,
+      `${darkPrivacy.color} on ${darkPrivacy.paper}`);
+    await darkContext.close();
+  }
 
   // ---------------------------------------------------------------
   // The sticky header keeps its place once the page scrolls.
@@ -199,9 +345,14 @@ try {
     await page.locator('.moment .zoom').first().click();
     const open = await page.evaluate(() => {
       const d = document.querySelector('.lightbox');
-      return { open: d.open, src: d.querySelector('.lightbox-image').getAttribute('src') };
+      return {
+        open: d.open,
+        src: d.querySelector('.lightbox-image').getAttribute('src'),
+        name: d.getAttribute('aria-label'),
+      };
     });
     check('clicking a photo opens the lightbox', open.open, at);
+    check('the lightbox dialog has an accessible name', open.name === 'Enlarged photo', open.name);
     // A -640 or -960 candidate here means the enlarged view is an upscale
     // of the thumbnail the column happened to be served.
     check('lightbox shows the full-size file', /firstdatemap\.png$/.test(open.src), `${at}: ${open.src}`);
@@ -375,25 +526,48 @@ try {
     const fromOS = await accent(a);
     const osIcons = await a.evaluate(() => ({
       light: getComputedStyle(document.querySelector('.theme-icon-light')).display,
-      dark: getComputedStyle(document.querySelector('.theme-icon-dark')).display
+      dark: getComputedStyle(document.querySelector('.theme-icon-dark')).display,
+      pressed: document.querySelector('#themeToggle').getAttribute('aria-pressed'),
+      label: document.querySelector('#themeToggle').getAttribute('aria-label'),
     }));
     check('dark OS shows Lunatone in the toggle',
       osIcons.light === 'none' && osIcons.dark !== 'none', `${osIcons.light} / ${osIcons.dark}`);
+    check('dark OS exposes a pressed theme toggle', osIcons.pressed === 'true', osIcons.pressed);
+    check('theme toggle has the stable accessible name', osIcons.label === 'Dark mode', osIcons.label);
     await osDark.close();
 
     const osLight = await browser.newContext({ colorScheme: 'light' });
     const b = await osLight.newPage();
     await b.goto(`${base}/index.html`);
+    check('light OS exposes an unpressed theme toggle',
+      await b.getAttribute('#themeToggle', 'aria-pressed') === 'false');
     await b.click('#themeToggle');
     const fromToggle = await accent(b);
 
     check('dark accent is the same via OS and via toggle', fromOS === fromToggle, `${fromOS} vs ${fromToggle}`);
     check('toggle produced dark mode', await b.evaluate(() => document.documentElement.dataset.theme) === 'dark');
+    check('toggle exposes the dark pressed state',
+      await b.getAttribute('#themeToggle', 'aria-pressed') === 'true');
 
     // The choice has to survive navigation, which is what localStorage is for.
     await b.goto(`${base}/our-story.html`);
     check('theme persists across pages', await b.evaluate(() => document.documentElement.dataset.theme) === 'dark');
+    check('the pressed state persists across pages',
+      await b.getAttribute('#themeToggle', 'aria-pressed') === 'true');
     await osLight.close();
+
+    const followsOS = await browser.newContext({ colorScheme: 'light' });
+    const d = await followsOS.newPage();
+    await d.goto(`${base}/index.html`);
+    await d.emulateMedia({ colorScheme: 'dark' });
+    await d.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
+    check('a visitor following the OS tracks a dark OS change',
+      await d.getAttribute('#themeToggle', 'aria-pressed') === 'true');
+    await d.emulateMedia({ colorScheme: 'light' });
+    await d.waitForFunction(() => document.documentElement.dataset.theme === 'light');
+    check('a visitor following the OS tracks a light OS change',
+      await d.getAttribute('#themeToggle', 'aria-pressed') === 'false');
+    await followsOS.close();
 
     // A stale or unsupported value can survive from an older version or a
     // browser extension. It must not make dark mode require a no-op tap.
@@ -406,25 +580,45 @@ try {
       theme: document.documentElement.dataset.theme,
       paper: getComputedStyle(document.body).getPropertyValue('--paper').trim(),
       light: getComputedStyle(document.querySelector('.theme-icon-light')).display,
-      dark: getComputedStyle(document.querySelector('.theme-icon-dark')).display
+      dark: getComputedStyle(document.querySelector('.theme-icon-dark')).display,
+      pressed: document.querySelector('#themeToggle').getAttribute('aria-pressed'),
     }));
     check('stale theme follows a dark OS preference',
       staleState.theme === 'dark' && staleState.paper === '#1b1830', JSON.stringify(staleState));
     check('stale theme shows Lunatone',
       staleState.light === 'none' && staleState.dark !== 'none', `${staleState.light} / ${staleState.dark}`);
+    check('stale dark theme exposes a pressed toggle', staleState.pressed === 'true', staleState.pressed);
     await c.click('#themeToggle');
     const afterStaleToggle = await c.evaluate(() => ({
       theme: document.documentElement.dataset.theme,
       paper: getComputedStyle(document.body).getPropertyValue('--paper').trim(),
       light: getComputedStyle(document.querySelector('.theme-icon-light')).display,
-      dark: getComputedStyle(document.querySelector('.theme-icon-dark')).display
+      dark: getComputedStyle(document.querySelector('.theme-icon-dark')).display,
+      pressed: document.querySelector('#themeToggle').getAttribute('aria-pressed'),
     }));
     check('first toggle from stale dark state enters light mode',
       afterStaleToggle.theme === 'light' && afterStaleToggle.paper === '#f7ecdd', JSON.stringify(afterStaleToggle));
     check('first toggle from stale dark state shows Solrock',
       afterStaleToggle.light !== 'none' && afterStaleToggle.dark === 'none',
       `${afterStaleToggle.light} / ${afterStaleToggle.dark}`);
+    check('first toggle from stale dark state exposes light mode', afterStaleToggle.pressed === 'false');
     await staleDark.close();
+
+    const staleLight = await browser.newContext({ colorScheme: 'light' });
+    const e = await staleLight.newPage();
+    await e.goto(`${base}/index.html`);
+    await e.evaluate(() => localStorage.setItem('theme', 'system'));
+    await e.reload();
+    const staleLightState = await e.evaluate(() => ({
+      theme: document.documentElement.dataset.theme,
+      paper: getComputedStyle(document.body).getPropertyValue('--paper').trim(),
+      pressed: document.querySelector('#themeToggle').getAttribute('aria-pressed'),
+    }));
+    check('stale theme follows a light OS preference',
+      staleLightState.theme === 'light' && staleLightState.paper === '#f7ecdd',
+      JSON.stringify(staleLightState));
+    check('stale light theme exposes an unpressed toggle', staleLightState.pressed === 'false', staleLightState.pressed);
+    await staleLight.close();
   }
 
   // ---------------------------------------------------------------
@@ -658,7 +852,9 @@ try {
   {
     const res = await fetch(`${base}/no-such-page`);
     check('unknown path serves the 404 page', res.status === 404);
-    check('404 page has its own title', (await res.text()).includes('Page not found'));
+    const notFound = await res.text();
+    check('404 page has its own title', notFound.includes('Page not found'));
+    check('404 page has a real h1', /<h1[^>]*>\s*404\s*<\/h1>/.test(notFound));
   }
 } finally {
   await browser.close();

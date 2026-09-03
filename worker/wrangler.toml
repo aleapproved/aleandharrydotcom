@@ -29,7 +29,7 @@ head_sampling_rate = 1
 [vars]
 RSVP_ALLOWED_ORIGINS = "https://aleandharry.com,https://www.aleandharry.com"
 
-# The namespace ID must be unique within the Cloudflare account. The binding
+# The namespace ID must be unique within the Cloudflare account. This binding
 # throttles repeated submissions for the same email without putting the email
 # itself into the rate-limit key.
 [[ratelimits]]
@@ -38,4 +38,14 @@ namespace_id = "2026082101"
 
   [ratelimits.simple]
   limit = 5
+  period = 60
+
+# This separate binding counts valid submissions for the route as a whole. Its
+# constant key keeps it independent of both the guest email and their IP.
+[[ratelimits]]
+name = "RSVP_ENDPOINT_RATE_LIMITER"
+namespace_id = "2026090301"
+
+  [ratelimits.simple]
+  limit = 30
   period = 60

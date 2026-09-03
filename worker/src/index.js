@@ -8,6 +8,7 @@ const MAX_PARTY_SIZE = 20;
 const MAX_BODY_BYTES = 32 * 1024;
 const AIRTABLE_TIMEOUT_MS = 8_000;
 const MAX_LENGTHS = { name: 200, email: 200, guestNames: 2000, dietary: 1000, message: 2000 };
+const RSVP_ENDPOINT_RATE_LIMIT_KEY = "rsvp:/api/rsvp";
 
 function allowedOrigins(env) {
   const configured = typeof env?.RSVP_ALLOWED_ORIGINS === "string"
@@ -40,6 +41,10 @@ function trim(value) {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeEmail(value) {
+  return trim(value).toLowerCase();
+}
+
 // Free text is capped rather than refused: a guest who writes us an essay
 // should not lose it to an error message, and the tail of a long message is
 // not worth a rejection. An address is different — see validate().
@@ -54,7 +59,7 @@ function validate(payload) {
   // characters ends "…sub.ex", which passes the test below and is stored as a
   // valid address nobody can reach, under a guest who was told we had it. A
   // long one is refused instead, so the failure is theirs to see and fix.
-  const email = trim(payload.email);
+  const email = normalizeEmail(payload.email);
   const attending = payload.attending;
   const partySize = typeof payload.partySize === "number"
     ? payload.partySize
@@ -125,6 +130,21 @@ async function rateLimitKey(email) {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
+async function rateLimitAllowed(binding, key, limiter) {
+  try {
+    const result = await binding.limit({ key });
+    if (!result || typeof result.success !== "boolean") throw new Error("invalid_response");
+    return result.success;
+  } catch (error) {
+    console.error(JSON.stringify({
+      event: "rsvp_rate_limiter_failed",
+      limiter,
+      error: error instanceof Error ? error.name : "unknown",
+    }));
+    return null;
+  }
+}
+
 export default {
   async fetch(request, env) {
     const origins = allowedOrigins(env);
@@ -180,21 +200,40 @@ export default {
       return jsonResponse(400, { error: result.error }, requestOrigin);
     }
 
-    if (env?.RSVP_RATE_LIMITER) {
-      try {
-        const { success } = await env.RSVP_RATE_LIMITER.limit({ key: await rateLimitKey(result.email) });
-        if (!success) {
-          return jsonResponse(429, { error: "Please wait a little before sending another RSVP." }, requestOrigin, {
-            "Retry-After": "60",
-          });
-        }
-      } catch (error) {
-        console.error(JSON.stringify({
-          event: "rsvp_rate_limiter_failed",
-          error: error instanceof Error ? error.name : "unknown",
-        }));
-        return jsonResponse(503, { error: "The RSVP service is temporarily unavailable. Please try again." }, requestOrigin);
-      }
+    const emailRateLimiter = env?.RSVP_RATE_LIMITER;
+    const endpointRateLimiter = env?.RSVP_ENDPOINT_RATE_LIMITER;
+    if (!emailRateLimiter || typeof emailRateLimiter.limit !== "function"
+        || !endpointRateLimiter || typeof endpointRateLimiter.limit !== "function") {
+      console.error(JSON.stringify({ event: "rsvp_rate_limiter_missing" }));
+      return jsonResponse(500, { error: "The RSVP service is not configured." }, requestOrigin);
+    }
+
+    const emailAllowed = await rateLimitAllowed(
+      emailRateLimiter,
+      await rateLimitKey(result.email),
+      "email",
+    );
+    if (emailAllowed === null) {
+      return jsonResponse(503, { error: "The RSVP service is temporarily unavailable. Please try again." }, requestOrigin);
+    }
+    if (!emailAllowed) {
+      return jsonResponse(429, { error: "Please wait a little before sending another RSVP." }, requestOrigin, {
+        "Retry-After": "60",
+      });
+    }
+
+    const endpointAllowed = await rateLimitAllowed(
+      endpointRateLimiter,
+      RSVP_ENDPOINT_RATE_LIMIT_KEY,
+      "endpoint",
+    );
+    if (endpointAllowed === null) {
+      return jsonResponse(503, { error: "The RSVP service is temporarily unavailable. Please try again." }, requestOrigin);
+    }
+    if (!endpointAllowed) {
+      return jsonResponse(429, { error: "Please wait a little before sending another RSVP." }, requestOrigin, {
+        "Retry-After": "60",
+      });
     }
 
     if (!env?.AIRTABLE_RUNTIME_TOKEN || typeof env.AIRTABLE_RUNTIME_TOKEN !== "string") {
@@ -208,12 +247,13 @@ export default {
       airtableResponse = await fetch(
         `https://api.airtable.com/v0/${AIRTABLE_BASE_ID}/${AIRTABLE_TABLE_ID}`,
         {
-          method: "POST",
+          method: "PATCH",
           headers: {
             Authorization: `Bearer ${env.AIRTABLE_RUNTIME_TOKEN}`,
             "Content-Type": "application/json",
           },
           body: JSON.stringify({
+            performUpsert: { fieldsToMergeOn: ["Email"] },
             records: [
               {
                 fields: {

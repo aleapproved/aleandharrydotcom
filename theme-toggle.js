@@ -31,12 +31,15 @@ function storedTheme() {
 
 function resolvedTheme() {
   var declared = document.documentElement.getAttribute('data-theme');
-  return isTheme(declared) ? declared : (storedTheme() || systemTheme());
+  return storedTheme() || (isTheme(declared) ? declared : systemTheme());
 }
 
 function applyTheme(theme) {
+  if (!isTheme(theme)) theme = systemTheme();
   document.documentElement.setAttribute('data-theme', theme);
   syncThemeColorMeta(theme);
+  var btn = document.getElementById('themeToggle');
+  if (btn) btn.setAttribute('aria-pressed', theme === 'dark' ? 'true' : 'false');
 }
 
 document.addEventListener('DOMContentLoaded', function () {
@@ -45,6 +48,22 @@ document.addEventListener('DOMContentLoaded', function () {
 
   var btn = document.getElementById('themeToggle');
   if (!btn) return;
+
+  var media;
+  try {
+    media = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)');
+  } catch (e) {
+    media = null;
+  }
+  var followSystem = function () {
+    if (!storedTheme()) applyTheme(systemTheme());
+  };
+  if (media && typeof media.addEventListener === 'function') {
+    media.addEventListener('change', followSystem);
+  } else if (media && typeof media.addListener === 'function') {
+    media.addListener(followSystem);
+  }
+
   btn.addEventListener('click', function () {
     var current = resolvedTheme();
     var next = current === 'dark' ? 'light' : 'dark';

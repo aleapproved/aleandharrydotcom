@@ -42,7 +42,7 @@ body {
   --ink-l: #2b2320;
   --ink-soft-l: #6b5c50;
   --paper-l: #f7ecdd;
-  --accent-l: #d9662e;
+  --accent-l: #b04b1d;
   --shadow-l: 47 42 38;
 
   --ink-d: #ece7f5;
@@ -99,7 +99,7 @@ body[data-accent="bellibolt"] {
   --ink-l: #1c2a26;
   --ink-soft-l: #506059;
   --paper-l: #e9f4ef;
-  --accent-l: #17836e;
+  --accent-l: #14745f;
   --shadow-l: 28 42 38;
 
   --ink-d: #e4f2ec;
@@ -275,6 +275,8 @@ main.centered {
   text-indent: 0.3em;
   text-transform: uppercase;
   font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.6;
   color: var(--accent);
   margin-bottom: 1.5rem;
 }
@@ -710,6 +712,14 @@ fieldset.field {
 .rsvp-submit:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+.rsvp-privacy {
+  max-width: 24rem;
+  margin: 1rem auto 0;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
 }
 
 .rsvp-status {

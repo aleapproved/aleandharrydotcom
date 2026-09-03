@@ -13,23 +13,31 @@
 const worker = (await import('../worker/src/index.js')).default;
 
 const ORIGIN = 'https://aleandharry.com';
+let failures = 0;
+let emailRateLimited = false;
+let endpointRateLimited = false;
+let rateLimitFailure = null;
+let rateLimiterCalls = [];
+let airtableFailure = null;
+
+function makeRateLimiter(name, isLimited) {
+  return {
+    async limit({ key }) {
+      rateLimiterCalls.push({ name, key });
+      if (rateLimitFailure === name || rateLimitFailure === 'all') {
+        throw new Error(`${name} rate limiter unavailable`);
+      }
+      return { success: !isLimited() };
+    },
+  };
+}
+
 const ENV = {
   AIRTABLE_RUNTIME_TOKEN: 'test-token',
   RSVP_ALLOWED_ORIGINS: `${ORIGIN},https://www.aleandharry.com`,
-  RSVP_RATE_LIMITER: {
-    async limit({ key }) {
-      rateLimitCalls++;
-      lastRateLimitKey = key;
-      return { success: !rateLimited };
-    },
-  },
+  RSVP_RATE_LIMITER: makeRateLimiter('email', () => emailRateLimited),
+  RSVP_ENDPOINT_RATE_LIMITER: makeRateLimiter('endpoint', () => endpointRateLimited),
 };
-
-let failures = 0;
-let rateLimited = false;
-let rateLimitCalls = 0;
-let lastRateLimitKey = '';
-let airtableFailure = null;
 
 function check(name, condition, detail = '') {
   if (condition) return;
@@ -60,12 +68,13 @@ async function send(body, {
   contentType = 'application/json',
   env = ENV,
   failure = null,
+  rateFailure = null,
 } = {}) {
   calls = [];
   airtableStatus = status;
   airtableFailure = failure;
-  rateLimitCalls = 0;
-  lastRateLimitKey = '';
+  rateLimiterCalls = [];
+  rateLimitFailure = rateFailure;
   const headers = {};
   if (origin !== null) headers.Origin = origin;
   if (method === 'POST' && contentType) headers['Content-Type'] = contentType;
@@ -96,7 +105,11 @@ const VALID = {
 };
 
 function fields(written) {
-  return JSON.parse(written[0].init.body).records[0].fields;
+  return requestBody(written).records[0].fields;
+}
+
+function requestBody(written) {
+  return JSON.parse(written[0].init.body);
 }
 
 // ---------------------------------------------------------------
@@ -203,13 +216,26 @@ section('Worker: what it accepts');
   check('a good submission is accepted', ok.res.status === 200, `got ${ok.res.status}`);
   check('a good submission says so', ok.json?.ok === true);
   check('a good submission is written once', ok.written.length === 1);
-  check('a good submission is rate limited by a non-email key', rateLimitCalls === 1 && lastRateLimitKey && !lastRateLimitKey.includes(VALID.email),
-    `${rateLimitCalls} call(s), ${lastRateLimitKey}`);
+  check('both rate limiters run before the write',
+    rateLimiterCalls.length === 2
+    && rateLimiterCalls[0].name === 'email'
+    && rateLimiterCalls[1].name === 'endpoint',
+    JSON.stringify(rateLimiterCalls));
+  const firstEmailRateLimitKey = rateLimiterCalls[0]?.key;
+  check('the rate-limit keys do not contain the email',
+    rateLimiterCalls.every(({ key }) => key && !key.includes(VALID.email)),
+    JSON.stringify(rateLimiterCalls));
+  check('the endpoint limiter uses its constant route key',
+    rateLimiterCalls[1]?.key === 'rsvp:/api/rsvp', rateLimiterCalls[1]?.key);
   check('it is written to the right table',
     ok.written[0].url === 'https://api.airtable.com/v0/appzg1GJnurC95pqv/tblN2FjbFfsoTGJkH',
     ok.written[0].url);
   check('it is written with the runtime token',
     ok.written[0].init.headers.Authorization === 'Bearer test-token');
+  check('the Airtable write uses PATCH for upsert', ok.written[0].init.method === 'PATCH', ok.written[0].init.method);
+  check('the upsert merges on Email only',
+    JSON.stringify(requestBody(ok.written).performUpsert) === JSON.stringify({ fieldsToMergeOn: ['Email'] }),
+    JSON.stringify(requestBody(ok.written).performUpsert));
 
   // The column names are Airtable's, not ours. Renaming one here without
   // renaming it there loses the answer silently, which is the worst way to
@@ -227,9 +253,14 @@ section('Worker: what it accepts');
     && written.Message === 'Congratulations',
     JSON.stringify(written));
 
-  const trimmed = await send({ ...VALID, name: '  Test Guest  ', email: '  guest@example.com ' });
+  const trimmed = await send({ ...VALID, name: '  Test Guest  ', email: '  GUEST@EXAMPLE.COM ' });
   check('surrounding space is trimmed off', fields(trimmed.written).Name === 'Test Guest',
     JSON.stringify(fields(trimmed.written).Name));
+  check('email is trimmed and lower-cased before storage', fields(trimmed.written).Email === 'guest@example.com',
+    fields(trimmed.written).Email);
+  check('email rate limiting uses the normalized address',
+    rateLimiterCalls.find(({ name }) => name === 'email')?.key === firstEmailRateLimitKey,
+    JSON.stringify(rateLimiterCalls));
 
   for (const size of [1, 20]) {
     const res = await send({ ...VALID, partySize: size });
@@ -330,13 +361,65 @@ section('Worker: when Airtable is down');
 // ---------------------------------------------------------------
 section('Worker: abuse and configuration failures');
 {
-  rateLimited = true;
-  const limited = await send(VALID);
-  rateLimited = false;
-  check('a rate-limited submission is refused', limited.res.status === 429,
-    `got ${limited.res.status}`);
-  check('a rate-limited submission asks the guest to wait', /wait/i.test(limited.json?.error || ''));
-  check('a rate-limited submission writes nothing', limited.written.length === 0);
+  emailRateLimited = true;
+  const emailLimited = await send(VALID);
+  emailRateLimited = false;
+  check('an email-limited submission is refused', emailLimited.res.status === 429,
+    `got ${emailLimited.res.status}`);
+  check('an email-limited submission asks the guest to wait', /wait/i.test(emailLimited.json?.error || ''));
+  check('an email-limited submission includes Retry-After', emailLimited.res.headers.get('retry-after') === '60');
+  check('the email limit stops before the endpoint limit and write',
+    emailLimited.written.length === 0
+    && rateLimiterCalls.length === 1
+    && rateLimiterCalls[0].name === 'email',
+    JSON.stringify(rateLimiterCalls));
+
+  endpointRateLimited = true;
+  const endpointLimited = await send({ ...VALID, email: 'different@example.com' });
+  endpointRateLimited = false;
+  check('an endpoint-limited submission is refused', endpointLimited.res.status === 429,
+    `got ${endpointLimited.res.status}`);
+  check('an endpoint-limited submission asks the guest to wait', /wait/i.test(endpointLimited.json?.error || ''));
+  check('an endpoint-limited submission includes Retry-After', endpointLimited.res.headers.get('retry-after') === '60');
+  check('the endpoint limit stops before the write',
+    endpointLimited.written.length === 0
+    && rateLimiterCalls.map(({ name }) => name).join(',') === 'email,endpoint',
+    JSON.stringify(rateLimiterCalls));
+
+  const firstEmail = await send({ ...VALID, email: 'first@example.com' });
+  const firstEndpointKey = rateLimiterCalls.find(({ name }) => name === 'endpoint')?.key;
+  const secondEmail = await send({ ...VALID, email: 'second@example.com' });
+  const secondEndpointKey = rateLimiterCalls.find(({ name }) => name === 'endpoint')?.key;
+  check('different emails share the endpoint-wide limiter key',
+    firstEmail.res.status === 200
+    && secondEmail.res.status === 200
+    && firstEndpointKey === 'rsvp:/api/rsvp'
+    && secondEndpointKey === firstEndpointKey,
+    `${firstEndpointKey} / ${secondEndpointKey}`);
+
+  const emailServiceDown = await send(VALID, { rateFailure: 'email' });
+  check('an email rate-limit failure fails closed', emailServiceDown.res.status === 503,
+    `got ${emailServiceDown.res.status}`);
+  check('an email rate-limit failure writes nothing', emailServiceDown.written.length === 0);
+
+  const endpointServiceDown = await send(VALID, { rateFailure: 'endpoint' });
+  check('an endpoint rate-limit failure fails closed', endpointServiceDown.res.status === 503,
+    `got ${endpointServiceDown.res.status}`);
+  check('an endpoint rate-limit failure writes nothing', endpointServiceDown.written.length === 0);
+
+  const missingEmailLimiter = await send(VALID, {
+    env: { ...ENV, RSVP_RATE_LIMITER: undefined },
+  });
+  check('a missing email rate limiter fails closed', missingEmailLimiter.res.status === 500,
+    `got ${missingEmailLimiter.res.status}`);
+  check('a missing email rate limiter writes nothing', missingEmailLimiter.written.length === 0);
+
+  const missingEndpointLimiter = await send(VALID, {
+    env: { ...ENV, RSVP_ENDPOINT_RATE_LIMITER: undefined },
+  });
+  check('a missing endpoint rate limiter fails closed', missingEndpointLimiter.res.status === 500,
+    `got ${missingEndpointLimiter.res.status}`);
+  check('a missing endpoint rate limiter writes nothing', missingEndpointLimiter.written.length === 0);
 
   const missingToken = await send(VALID, {
     env: { ...ENV, AIRTABLE_RUNTIME_TOKEN: undefined },

@@ -18,6 +18,7 @@
 
   var dialog = document.createElement('dialog');
   dialog.className = 'lightbox';
+  dialog.setAttribute('aria-label', 'Enlarged photo');
 
   var full = document.createElement('img');
   full.className = 'lightbox-image';

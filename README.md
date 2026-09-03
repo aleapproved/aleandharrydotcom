@@ -92,7 +92,7 @@ artwork. Do not cut them by matching colour, which punches holes through the
 drawing that only show up in dark mode. Regenerate with:
 
 ```bash
-python3 tools/make-badge.py "images/mudkip (1).jpg" images/mudkip-badge.png --height 264
+python3 tools/make-badge.py images/mudkip-original.jpg images/mudkip-badge.png --height 264
 python3 tools/make-badge.py images/solrock.jpg images/solrock-icon.png --canvas 108 108 --content-scale 0.885
 ```
 
@@ -141,11 +141,12 @@ nothing on a page with no photos.
 npm test
 ```
 
-Two scripts, run in that order. `test/check-worker.mjs` goes first because it
+Three scripts, run in that order. `test/check-worker.mjs` goes first because it
 needs no browser and takes a second: it runs the RSVP worker's own module with
 `fetch` stubbed, so nothing it does reaches Airtable and none of it needs a
 network. `test/check-site.mjs` then renders every page across five widths in
-both colour schemes.
+both colour schemes with Chromium. `test/check-site-webkit.mjs` finishes with
+a focused Safari/WebKit smoke pass at phone and desktop widths.
 
 The worker checks are mostly about what it refuses — a party of nought, a party
 of a thousand, half a guest, an address that is not one — because that is the
@@ -165,6 +166,11 @@ The site checks assert the things that are easy to break by accident:
 - the theme toggle stays circular, and no page scrolls sideways
 - the header stays pinned when the page scrolls
 - dark mode resolves to the same accent via the OS setting and via the toggle
+- the light Solrock and Bellibolt accents reach WCAG AA contrast, and the
+  privacy note remains readable in both schemes
+- the theme toggle exposes its current state with `aria-pressed`
+- the production security headers authorize every inline script through its
+  exact CSP hash
 - the RSVP confirmation is visible once the form is hidden on success
 - the guest-only fields reveal and hide with the attending choice
 - photos enlarge whole, keep the header visible, and close every way out
@@ -179,11 +185,12 @@ The site checks assert the things that are easy to break by accident:
 ## Deploying
 
 Pushing to `main` runs `.github/workflows/pages.yml`, which runs the checks
-above and then, only if they pass, stages the site and deploys both the Pages
-site and the RSVP Worker. A pull request gets the checks and stops there. It
-needs one repo secret, `CLOUDFLARE_API_TOKEN`, with Cloudflare Pages edit and
-Workers Scripts edit rights; the account ID is in the workflow, since on its
-own it authorises nothing.
+above and then, only if they pass, deploys the RSVP Worker first. The static
+Pages site deploy starts only after that Worker deployment succeeds. A pull
+request gets the checks and stops there. It needs one repo secret,
+`CLOUDFLARE_API_TOKEN`, with Cloudflare Pages edit and Workers Scripts edit
+rights; the account ID is in the workflow, since on its own it authorises
+nothing.
 
 The deploy stamps a content hash into the URL of both stylesheets and each
 script as it stages them, so the pages ask for `/styles.css?v=1a2b3c4d5e`.
@@ -285,11 +292,12 @@ only the ones waiting on a movement are shortened.
 
 ## The RSVP worker
 
-`worker/` holds a Cloudflare Worker that validates a submission and appends it
+`worker/` holds a Cloudflare Worker that validates a submission and upserts it
 to Airtable. It writes `Name`, `Email`, `Attending`, `Party Size`,
 `Guest Names`, `Dietary Requirements` and `Message`. Airtable rejects the
 whole record if a field doesn't exist, so add the column before sending a new
-one.
+one. Emails are trimmed and lower-cased before storage, and Airtable's native
+upsert merges on the existing `Email` field so a guest has one row.
 
 Free text is capped rather than refused, so nobody loses an essay to an error
 message: 200 characters for a name, 2000 for guest names and a message, 1000
@@ -308,11 +316,13 @@ the site.
 
 The worker accepts only the two production origins by default, requires a JSON
 content type, rejects missing or malformed JSON objects, caps the complete body
-at 32KB, and times out the Airtable request after eight seconds. A Cloudflare
-rate-limit binding allows five valid submissions per email per minute in each
-Cloudflare location. The email is hashed before it becomes the rate-limit key.
-The binding is local to the Worker configuration and does not expose the email
-in a request header.
+at 32KB, and times out the Airtable request after eight seconds. One Cloudflare
+rate-limit binding allows five valid submissions per normalized email per
+minute in each Cloudflare location. A separate binding allows 30 valid RSVP
+attempts for the endpoint per minute in each location. Its key is a constant
+route identifier, not an IP address. The email is hashed before it becomes the
+per-email rate-limit key. Both bindings are required and a binding failure
+stops the write rather than disabling protection.
 
 The static Pages deployment also supplies a Content Security Policy, HSTS,
 clickjacking protection, a referrer policy, and a restrictive Permissions
@@ -337,5 +347,5 @@ Then point `RSVP_ENDPOINT` in `rsvp.js` at `http://localhost:8787` and add
 this writes real rows to Airtable.
 
 Deploy with `npx wrangler deploy` from `worker/`. The main branch workflow does
-this after the site checks, so a production Worker deploy does not drift behind
-the form code.
+this after the site checks and before Pages, so a production Worker deploy does
+not drift behind the form code.
