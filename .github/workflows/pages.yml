@@ -1,9 +1,9 @@
 name: pages
 
-# Checks the site, then publishes it to Cloudflare Pages. The two are one
-# workflow because they are one decision: nothing reaches aleandharry.com that
-# the checks have not passed. Run separately they raced, and the deploy
-# usually won.
+# Checks the site, then deploys the RSVP Worker and, only after that succeeds,
+# publishes the static site to Cloudflare Pages. Nothing reaches
+# aleandharry.com that the checks have not passed, and the frontend never gets
+# ahead of the Worker it calls.
 #
 # The site is hand-written static HTML with no build step, so the deploy stages
 # the files that make up the site and uploads them. Staging rather than
@@ -36,11 +36,11 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
-      - run: npx playwright install --with-deps chromium
+      - run: npx playwright install --with-deps chromium webkit
       - run: npm test
 
   deploy:
-    needs: check
+    needs: deploy-worker
     # A pull request gets the checks and stops there; only main publishes.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -59,7 +59,7 @@ jobs:
           rm -f _site/*.md _site/package.json _site/package-lock.json _site/.gitignore
           for source in \
             "mudkiphanddrawnbyale.jpg" "chansey.png" "lapras.png" \
-            "bellibolt.jpg" "mudkip (1).jpg" "solrock.jpg" "lunatone.jpg" "ditto.jpg"; do
+            "bellibolt.jpg" "mudkip-original.jpg" "solrock.jpg" "lunatone.jpg" "ditto.jpg"; do
             rm -f "_site/images/$source"
           done
 
@@ -93,8 +93,8 @@ jobs:
 
   deploy-worker:
     needs: check
-    # The Worker and Pages must advance together on main. Pull requests still
-    # get the worker module checks without changing the live Airtable endpoint.
+    # On main this is the first deployment step. Pull requests still get the
+    # worker module checks without changing the live Airtable endpoint.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:

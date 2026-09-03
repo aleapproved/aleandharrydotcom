@@ -16,7 +16,8 @@
       try {
         var root = document.documentElement;
         var saved = localStorage.getItem('theme');
-        var theme = saved || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        var theme = saved === 'dark' || saved === 'light' ? saved
+          : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
         root.setAttribute('data-theme', theme);
         var meta = document.querySelector('meta[name="theme-color"]');
         if (meta) meta.setAttribute('content', theme === 'dark' ? root.dataset.paperDark : root.dataset.paper);
@@ -54,7 +55,7 @@
         <a href="/travel">Travel</a>
         <a href="/rsvp" aria-current="page">RSVP</a>
       </nav>
-      <button id="themeToggle" class="theme-toggle" aria-label="Toggle dark mode" type="button">
+      <button id="themeToggle" class="theme-toggle" aria-label="Dark mode" aria-pressed="false" type="button">
         <img class="theme-icon-light" src="/images/solrock-icon.png" alt="" aria-hidden="true">
         <img class="theme-icon-dark" src="/images/lunatone-icon.png" alt="" aria-hidden="true">
       </button>
@@ -118,6 +119,7 @@
       </div>
 
       <button type="submit" class="rsvp-submit">Send RSVP</button>
+      <p class="rsvp-privacy">We&rsquo;ll use your RSVP details only to plan the wedding and contact you about it. They&rsquo;re stored in Airtable and we&rsquo;ll delete them after the wedding.</p>
     </form>
 
     <!-- Outside the form: on success the form is hidden, and a status nested

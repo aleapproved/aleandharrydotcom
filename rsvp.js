@@ -44,8 +44,8 @@ document.addEventListener('DOMContentLoaded', function () {
       return fail('Please enter a name.', 'name');
     }
 
-    // Deliberately loose: the browser's own email check is stricter than any
-    // rule worth writing here, and a wrong rejection is worse than a typo.
+    // The form uses novalidate, so this simple check is the only client-side
+    // email validation and keeps its error message friendly.
     var email = field('email').value.trim();
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return fail('Please enter an email address we can reach you on.', 'email');
